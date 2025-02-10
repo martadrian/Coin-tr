@@ -1,0 +1,87 @@
+"use client"
+
+import type React from "react"
+import { useState } from "react"
+import { motion } from "framer-motion"
+
+const CoinFlipCasino: React.FC = () => {
+  const [result, setResult] = useState<string>("Flip the coin!")
+  const [isFlipping, setIsFlipping] = useState<boolean>(false)
+  const [coinSide, setCoinSide] = useState<"heads" | "tails">("heads")
+
+  const flipCoin = (choice: "heads" | "tails") => {
+    if (isFlipping) return
+
+    setIsFlipping(true)
+    setResult("Flipping...")
+
+    const randomFlip: "heads" | "tails" = Math.random() < 0.5 ? "heads" : "tails"
+
+    setTimeout(() => {
+      setCoinSide(randomFlip)
+      setIsFlipping(false)
+      if (choice === randomFlip) {
+        setResult("You Won! 🎉")
+      } else {
+        setResult("You Lost! ❌")
+      }
+    }, 1000)
+  }
+
+  return (
+    <div className="relative min-h-screen w-full">
+      {/* Background Image Container */}
+      <div
+        className="fixed inset-0 w-full h-full bg-black"
+        style={{
+          backgroundImage: `url('https://hebbkx1anhila5yf.public.blob.vercel-storage.com/background.jpg-3g2ivSUe1bDatCIzfdK7rTJH8jeLeL.webp')`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+        }}
+      />
+
+      {/* Content Container with glass effect */}
+      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen text-white">
+        <div className="p-8 rounded-lg backdrop-blur-sm bg-black/30">
+          <h1 className="text-4xl font-bold mb-8 text-red-500">Coin Flip Casino</h1>
+          <motion.div
+            className="w-40 h-40 mb-8"
+            animate={{ rotateY: isFlipping ? 720 : 0 }}
+            transition={{ duration: 1, ease: "easeInOut" }}
+          >
+            <img
+              src="https://i.postimg.cc/bvL92VNF/file-GVx-Ns5e-FBAj-Te4-Rtm5-PKb-W-1.webp"
+              alt="Coin"
+              className="w-full h-full object-contain"
+            />
+          </motion.div>
+          <div className="space-x-4">
+            <button
+              onClick={() => flipCoin("heads")}
+              className="px-6 py-2 text-lg bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+              disabled={isFlipping}
+            >
+              Heads
+            </button>
+            <button
+              onClick={() => flipCoin("tails")}
+              className="px-6 py-2 text-lg bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+              disabled={isFlipping}
+            >
+              Tails
+            </button>
+          </div>
+          <p
+            className={`text-2xl mt-8 ${result.includes("Won") ? "text-green-500" : result.includes("Lost") ? "text-red-500" : "text-white"}`}
+          >
+            {result}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default CoinFlipCasino
+

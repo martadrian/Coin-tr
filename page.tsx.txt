@@ -1,0 +1,8 @@
+import dynamic from "next/dynamic"
+
+const CoinFlipCasino = dynamic(() => import("../components/CoinFlipCasino"), { ssr: false })
+
+export default function Home() {
+  return <CoinFlipCasino />
+}
+
