@@ -25,6 +25,7 @@ def run_flask():
 TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
 CHAT_IDS = ['6089058395', '-5213714280']
 
+# ADDED BINANCE TO THE LIST
 EXCHANGE_IDS = [
     'binance', 'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
     'digifinex', 'xt', 'phemex', 'probit', 'coinex', 'bingx', 'whitebit', 'bitrue', 'ascendex',
@@ -32,15 +33,13 @@ EXCHANGE_IDS = [
     'gemini', 'cryptocom', 'exmo', 'latoken', 'fmfwio', 'oceanex', 'bigone', 'paymium', 'btcturk'
 ]
 
-# Lowered to 5 to handle the longer waiting times without crashing
-limit_concurrency = asyncio.Semaphore(5)
+limit_concurrency = asyncio.Semaphore(10)
 
 async def fetch_price(exchange_id, symbol):
     async with limit_concurrency:
         if not hasattr(ccxt, exchange_id): return exchange_id, None
         ex_class = getattr(ccxt, exchange_id)
-        # UPDATED: Increased timeout to 30000 (30 seconds) for slow exchanges
-        exchange = ex_class({'timeout': 30000, 'enableRateLimit': True})
+        exchange = ex_class({'timeout': 10000, 'enableRateLimit': True})
         try:
             ticker = await exchange.fetch_ticker(symbol)
             price = ticker.get('last')
@@ -96,6 +95,7 @@ async def perform_and_send_scan(context, status_message=None):
     if not arbs:
         text = f"🔍 **Scan Complete** ({now})\nNo gaps found > 1.2%."
     else:
+        # UPDATED TO 10 RESULTS
         text = f"📊 **Top 10 Arb Results** ({now})\n\n"
         for a in arbs[:10]:
             vol_str = f"${a['volume']:,.0f}"
@@ -121,7 +121,7 @@ async def perform_and_send_scan(context, status_message=None):
             print(f"Error sending to {cid}: {e}")
 
 async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("⌛ Starting Deep Manual Scan...")
+    status_msg = await update.message.reply_text("⌛ Starting Manual Scan...")
     await perform_and_send_scan(context, status_msg)
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,5 +138,6 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", handle_scan))
     application.add_handler(CallbackQueryHandler(handle_button))
-    print("Bot is starting (Deep Scan Mode)...")
+    print("Bot is starting (Manual Mode Only)...")
     application.run_polling(close_loop=False)
+    
