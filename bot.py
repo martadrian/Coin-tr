@@ -23,11 +23,12 @@ def run_flask():
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
+
+# FIXED: Correct list format for multiple chat IDs
 CHAT_IDS = ['6089058395', '-5213714280']
 
-# ADDED BINANCE TO THE LIST
 EXCHANGE_IDS = [
-    'binance', 'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
+    'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
     'digifinex', 'xt', 'phemex', 'probit', 'coinex', 'bingx', 'whitebit', 'bitrue', 'ascendex',
     'hitbtc', 'toobit', 'woo', 'woofipro', 'blofin', 'bitfinex', 'kraken', 'bitstamp', 'coinbase',
     'gemini', 'cryptocom', 'exmo', 'latoken', 'fmfwio', 'oceanex', 'bigone', 'paymium', 'btcturk'
@@ -83,8 +84,7 @@ async def scan_markets(status_message=None):
                     'symbol': symbol,
                     'low_name': low_name, 'low_p': low_data['price'],
                     'high_name': high_name, 'high_p': high_data['price'],
-                    'spread': spread,
-                    'volume': high_data['volume']
+                    'spread': spread
                 })
     return sorted(all_arbs, key=lambda x: x['spread'], reverse=True)
 
@@ -95,20 +95,18 @@ async def perform_and_send_scan(context, status_message=None):
     if not arbs:
         text = f"🔍 **Scan Complete** ({now})\nNo gaps found > 1.2%."
     else:
-        # UPDATED TO 10 RESULTS
-        text = f"📊 **Top 10 Arb Results** ({now})\n\n"
-        for a in arbs[:10]:
-            vol_str = f"${a['volume']:,.0f}"
+        text = f"📊 **Arb Scan Results** ({now})\n\n"
+        for a in arbs[:7]:
             text += (f"🪙 *{a['symbol']}*\n"
                      f"🟢 Buy: {a['low_name'].upper()} (${a['low_p']:.6f})\n"
                      f"🔴 Sell: {a['high_name'].upper()} (${a['high_p']:.6f})\n"
-                     f"💰 Potential: *{a['spread']:.2f}%*\n"
-                     f"📊 24h Vol: {vol_str}\n\n")
+                     f"💰 Potential: *{a['spread']:.2f}%*\n\n")
 
     if status_message:
         try: await status_message.delete()
         except: pass
 
+    # FIXED: This loop sends the same results to EVERY chat in your CHAT_IDS list
     for cid in CHAT_IDS:
         try:
             await context.bot.send_message(
@@ -127,10 +125,11 @@ async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    # When button is clicked, we send the updated results to all IDs
     await perform_and_send_scan(context)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Bot Online.\nUse /scan to check markets.")
+    await update.message.reply_text("🚀 Bot Online.\nUse /scan to check markets. Results will be sent to the group and private chat.")
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
@@ -140,4 +139,3 @@ if __name__ == '__main__':
     application.add_handler(CallbackQueryHandler(handle_button))
     print("Bot is starting (Manual Mode Only)...")
     application.run_polling(close_loop=False)
-    
