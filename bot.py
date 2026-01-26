@@ -23,7 +23,9 @@ def run_flask():
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
-CHAT_ID = '['6089058395', '-5213714280']
+
+# FIXED: Removed stray quotes and brackets
+CHAT_IDS = ['6089058395', '-5213714280'] 
 
 EXCHANGE_IDS = [
     'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
@@ -45,28 +47,20 @@ async def fetch_price(exchange_id, symbol):
             volume = float(ticker.get('quoteVolume', 0) or 0)
             if price and price > 0:
                 return exchange_id, {'price': price, 'volume': volume}
-        except:
-            pass
-        finally:
-            await exchange.close()
+        except: pass
+        finally: await exchange.close()
         return exchange_id, None
 
-async def scan_markets(status_message=None):
+async def scan_markets():
     async with ccxt.mexc() as discovery_ex:
         try:
             tickers = await discovery_ex.fetch_tickers()
             pairs = sorted([s for s in tickers if s.endswith('/USDT')], 
-                           key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:40]
-        except:
-            pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT']
+                           key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:35]
+        except: pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 
     all_arbs = []
-    for i, symbol in enumerate(pairs):
-        if status_message and i % 2 == 0:
-            progress = int((i / len(pairs)) * 100)
-            try: await status_message.edit_text(f"⌛ **Scan Progress: {progress}%**\n🔍 Checking: `{symbol}`")
-            except: pass
-
+    for symbol in pairs:
         tasks = [fetch_price(ex, symbol) for ex in EXCHANGE_IDS]
         results = await asyncio.gather(*tasks)
         valid_data = {ex: data for ex, data in results if data}
@@ -79,50 +73,47 @@ async def scan_markets(status_message=None):
             
             if 1.2 < spread < 50.0:
                 all_arbs.append({
-                    'symbol': symbol,
-                    'low_name': low_name, 'low_p': low_data['price'],
-                    'high_name': high_name, 'high_p': high_data['price'],
-                    'spread': spread
+                    'symbol': symbol, 'low_name': low_name, 'low_p': low_data['price'],
+                    'high_name': high_name, 'high_p': high_data['price'], 'spread': spread
                 })
     return sorted(all_arbs, key=lambda x: x['spread'], reverse=True)
 
-async def perform_and_send_scan(context, chat_id, status_message=None):
-    arbs = await scan_markets(status_message)
-    now = datetime.datetime.now().strftime('%H:%M:%S')
-    if not arbs:
-        text = f"🔍 **Scan Complete** ({now})\nNo gaps found > 1.2%."
-    else:
-        text = f"📊 **Manual Arb Scan** ({now})\n\n"
-        for a in arbs[:7]:
-            text += (f"🪙 *{a['symbol']}*\n"
-                     f"🟢 Buy: {a['low_name'].upper()} (${a['low_p']:.6f})\n"
-                     f"🔴 Sell: {a['high_name'].upper()} (${a['high_p']:.6f})\n"
-                     f"💰 Potential: *{a['spread']:.2f}%*\n\n")
+# --- AUTO-LOOP FEATURE ---
+async def auto_scan_loop(context: ContextTypes.DEFAULT_TYPE):
+    while True:
+        try:
+            arbs = await scan_markets()
+            if arbs:
+                now = datetime.datetime.now().strftime('%H:%M:%S')
+                text = f"📊 **Auto-Arb Update** ({now})\n\n"
+                for a in arbs[:7]:
+                    text += (f"🪙 *{a['symbol']}*\n"
+                             f"🟢 Buy: {a['low_name'].upper()} (${a['low_p']:.6f})\n"
+                             f"🔴 Sell: {a['high_name'].upper()} (${a['high_p']:.6f})\n"
+                             f"💰 Potential: *{a['spread']:.2f}%*\n\n")
+                
+                # Send to ALL IDs in the list
+                for cid in CHAT_IDS:
+                    try: await context.bot.send_message(chat_id=cid, text=text, parse_mode='Markdown')
+                    except: pass
+        except Exception as e: print(f"Loop Error: {e}")
+        await asyncio.sleep(180) # Wait 3 Minutes
 
-    if status_message:
-        try: await status_message.delete()
-        except: pass
-    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown',
-                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
-
-async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("⌛ Starting Manual Scan...")
-    await perform_and_send_scan(context, update.effective_chat.id, status_msg)
-
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await perform_and_send_scan(context, query.message.chat_id, query.message)
-
+# --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Bot Online.\nUse /scan to check markets.")
+    await update.message.reply_text("🚀 Bot Online & Auto-Scan Active.\nMessages will be sent every 3 mins.")
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Start the automated 3-minute loop
+    job_queue = application.job_queue
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", handle_scan))
-    application.add_handler(CallbackQueryHandler(handle_button))
-    print("Bot is starting...")
+    
+    # This kicks off the background scanner
+    application.job_queue.run_once(auto_scan_loop, 5) 
+
+    print("Bot is starting on Render...")
     application.run_polling(close_loop=False)
-  
+    
