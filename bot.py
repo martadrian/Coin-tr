@@ -23,7 +23,7 @@ def run_flask():
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
-CHAT_ID = '6089058395'
+CHAT_ID = '['6089058395', '-5213714280']
 
 EXCHANGE_IDS = [
     'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
