@@ -20,8 +20,8 @@ def run_flask():
     app_web.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = '8257534645:AAFR5BWqEykB9m1XehqtQ4mtuCFBjKBNaQ0'
-CHAT_IDS = ['6089058395', '-5213714280']
+TELEGRAM_TOKEN = '8278629514:AAHj_FBS3-6OAxaZK6owSIzYc_TusqjgjbM'
+CHAT_IDS = ['8224247422', '-5213714280']
 
 EXCHANGE_IDS = [
     'binance', 'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'huobi', 
