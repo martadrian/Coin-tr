@@ -20,7 +20,7 @@ def run_flask():
     app_web.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = '7792086126:AAHunvNfw67O1O-Gkv49mgRx-SinM712t0Q'
+TELEGRAM_TOKEN = '8257534645:AAFjgSdcxFjhv9mNct-hPHXHDcX8VyUwQv4'
 CHAT_IDS = ['6089058395', '-5213714280']
 
 EXCHANGE_IDS = [
