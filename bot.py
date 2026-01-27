@@ -6,23 +6,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import datetime
 import os
-import threading
-from flask import Flask
+from aiohttp import web
 
 nest_asyncio.apply()
 
-# ------------------ Flask ------------------
-app_web = Flask(__name__)
-
-@app_web.route('/')
-def health():
-    return "Scanner is Active and Running"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app_web.run(host='0.0.0.0', port=port, use_reloader=False)
-
-# ------------------ CONFIG ------------------
+# ------------------ CONFIGURATION ------------------
 TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
 CHAT_IDS = ['6089058395', '-5213714280']
 
@@ -45,26 +33,23 @@ async def fetch_price(exchange, exchange_id, symbol):
             if price and price > 0 and volume > 500:
                 return exchange_id, symbol, {'price': price, 'volume': volume}
         except:
-            return exchange_id, symbol, None
-        return exchange_id, symbol, None
+            return None
+        return None
 
-# ------------------ SCAN ------------------
+# ------------------ SCAN LOGIC ------------------
 async def scan_markets(status_message=None):
     discovery_ex = ccxt.mexc()
     try:
         tickers = await discovery_ex.fetch_tickers()
-        pairs = sorted(
-            [s for s in tickers if s.endswith('/USDT')],
-            key=lambda x: tickers[x].get('quoteVolume', 0),
-            reverse=True
-        )[:100]
+        pairs = sorted([s for s in tickers if s.endswith('/USDT')], 
+                       key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:100]
     except:
-        pairs = ['BTC/USDT','ETH/USDT','SOL/USDT','XRP/USDT','DOGE/USDT']
+        pairs = ['BTC/USDT','ETH/USDT','SOL/USDT']
     finally:
         await discovery_ex.close()
 
     if status_message:
-        try: await status_message.edit_text("⚡ **Turbo Scan: 100 Pairs**\nProcessing in stable batches...")
+        try: await status_message.edit_text("⚡ **Turbo Scan: 100 Pairs**\nUsing Stable-Batch technology...")
         except: pass
 
     exchanges = {}
@@ -72,54 +57,41 @@ async def scan_markets(status_message=None):
         try:
             ex_class = getattr(ccxt, ex_id)
             exchanges[ex_id] = ex_class({'enableRateLimit': True, 'timeout': 7000})
-        except:
-            continue
+        except: continue
 
-    tasks = []
-    for symbol in pairs:
-        for ex_id, ex in exchanges.items():
-            tasks.append(fetch_price(ex, ex_id, symbol))
-
-    # --- FIXED: BATCH PROCESSING TO PREVENT HANGING ---
+    tasks = [fetch_price(exchanges[ex_id], ex_id, symbol) for symbol in pairs for ex_id in EXCHANGE_IDS]
+    
     results = []
-    batch_size = 150 # Process 150 requests at a time
+    batch_size = 150 # Safe chunk size for Render Free CPU
     for i in range(0, len(tasks), batch_size):
         batch = tasks[i : i + batch_size]
-        # return_exceptions=True ensures one failure doesn't stop the whole scan
         batch_results = await asyncio.gather(*batch, return_exceptions=True)
-        for res in batch_results:
-            if isinstance(res, tuple): # Ensure it's a valid result, not an error
-                results.append(res)
-        await asyncio.sleep(0.05) # Tiny breather for Render's CPU
+        results.extend([r for r in batch_results if isinstance(r, tuple)])
+        await asyncio.sleep(0.05)
 
     for ex in exchanges.values():
-        try: await ex.close()
-        except: pass
+        await ex.close()
 
     market_data = {p: {} for p in pairs}
-    for item in results:
-        if item and len(item) == 3:
-            ex_id, symbol, data = item
-            if data:
-                market_data[symbol][ex_id] = data
+    for res in results:
+        if res:
+            ex_id, symbol, data = res
+            market_data[symbol][ex_id] = data
 
     arbs = []
     for symbol, exs in market_data.items():
         if len(exs) > 1:
             items = sorted(exs.items(), key=lambda x: x[1]['price'])
-            low_n, low_d = items[0]
-            high_n, high_d = items[-1]
-            spread = ((high_d['price'] - low_d['price']) / low_d['price']) * 100
+            low_n, low_p = items[0][0], items[0][1]['price']
+            high_n, high_p = items[-1][0], items[-1][1]['price']
+            spread = ((high_p - low_p) / low_p) * 100
             if 1.2 < spread < 80:
-                arbs.append({
-                    'symbol': symbol, 'low_name': low_n, 'low_p': low_d['price'],
-                    'high_name': high_n, 'high_p': high_d['price'],
-                    'spread': spread, 'volume': high_d['volume']
-                })
+                arbs.append({'symbol': symbol, 'low_name': low_n, 'low_p': low_p, 
+                             'high_name': high_n, 'high_p': high_p, 'spread': spread, 'volume': items[-1][1]['volume']})
 
     return sorted(arbs, key=lambda x: x['spread'], reverse=True)
 
-# ------------------ TELEGRAM ------------------
+# ------------------ HANDLERS ------------------
 async def perform_and_send_scan(context, status_message=None):
     start = datetime.datetime.now()
     arbs = await scan_markets(status_message)
@@ -127,16 +99,13 @@ async def perform_and_send_scan(context, status_message=None):
     now = datetime.datetime.now().strftime('%H:%M:%S')
 
     if not arbs:
-        text = f"🔍 **Scan Complete** ({now})\nNo tradeable gaps found.\n⏱ {duration}s"
+        text = f"🔍 **Scan Complete** ({now})\nNo gaps found.\n⏱ {duration}s"
     else:
-        text = f"📊 **Top 15 Arb Results** ({now})\n\n"
+        text = f"📊 **Top 15 Results** ({now})\n\n"
         for a in arbs[:15]:
-            text += (f"🪙 *{a['symbol']}*\n"
-                     f"🟢 Buy: {a['low_name'].upper()} (${a['low_p']:.6f})\n"
-                     f"🔴 Sell: {a['high_name'].upper()} (${a['high_p']:.6f})\n"
-                     f"💰 Potential: *{a['spread']:.2f}%*\n"
-                     f"📊 Vol: ${a['volume']:,.0f}\n\n")
-        text += f"⏱ **Duration: {duration}s** | ⚡ **Stable-Batch**"
+            text += (f"🪙 *{a['symbol']}*\n🟢 {a['low_name'].upper()} (${a['low_p']:.4f})\n"
+                     f"🔴 {a['high_name'].upper()} (${a['high_p']:.4f})\n💰 *{a['spread']:.2f}%*\n\n")
+        text += f"⏱ {duration}s | ⚡ Stable-Batch"
 
     if status_message:
         try: await status_message.delete()
@@ -144,28 +113,57 @@ async def perform_and_send_scan(context, status_message=None):
 
     for cid in CHAT_IDS:
         try:
-            await context.bot.send_message(
-                chat_id=cid, text=text, parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
+            await context.bot.send_message(chat_id=cid, text=text, parse_mode='Markdown',
+                                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
         except: pass
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **Scanner Online**\nUse /scan to start.")
+    await update.message.reply_text("🚀 Bot Online. Use /scan")
 
 async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⌛ Starting Optimized Scan...")
+    msg = await update.message.reply_text("⌛ Starting Scan...")
     await perform_and_send_scan(context, msg)
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await perform_and_send_scan(context)
 
+# ------------------ ASYNC MAIN LOOP ------------------
+async def handle_health(request):
+    return web.Response(text="Bot is Active")
+
+async def main():
+    # 1. Initialize Bot
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", handle_start))
+    application.add_handler(CommandHandler("scan", handle_scan))
+    application.add_handler(CallbackQueryHandler(handle_button))
+
+    # 2. Initialize Web Server (aiohttp)
+    server = web.Application()
+    server.router.add_get('/', handle_health)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    
+    # 3. Start Web Server
+    await site.start()
+    print(f"Web server running on port {port}")
+    
+    # 4. Start Bot Polling
+    async with application:
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(drop_pending_updates=True)
+        print("Bot polling started. All systems green.")
+        # This keeps the loop running forever
+        while True:
+            await asyncio.sleep(3600)
+
 if __name__ == '__main__':
-    threading.Thread(target=run_flask, daemon=True).start()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", handle_start))
-    app.add_handler(CommandHandler("scan", handle_scan))
-    app.add_handler(CallbackQueryHandler(handle_button))
-    print("Bot is Polling (Stable Batch Strategy)...")
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
     
