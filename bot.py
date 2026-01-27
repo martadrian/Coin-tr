@@ -21,7 +21,7 @@ def run_flask():
     app_web.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = '7846662156:AAFFfNX_q6LMwFaZsgkylT1Ro1tIh5r3TbM'
+TELEGRAM_TOKEN = '8257534645:AAFjgSdcxFjhv9mNct-hPHXHDcX8VyUwQv4'
 CHAT_IDS = ['6089058395', '-5213714280']
 
 # Your Full 26 Exchange List
