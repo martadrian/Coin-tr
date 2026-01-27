@@ -9,15 +9,21 @@ import os
 import threading
 from flask import Flask
 
+# --- PATCHES ---
 nest_asyncio.apply()
 
 app_web = Flask(__name__)
+
 @app_web.route('/')
-def health(): return "Scanner Active"
+def health():
+    return "Scanner is Active and Running"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app_web.run(host='0.0.0.0', port=port)
+    # Render uses port 10000 by default for web services
+    port = int(os.environ.get("PORT", 10000))
+    print(f"Starting Flask helper on port {port}...")
+    # use_reloader=False is required when running in a thread
+    app_web.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
@@ -30,13 +36,11 @@ EXCHANGE_IDS = [
     'gemini', 'bitstamp', 'bitfinex', 'coinbase', 'okx', 'kraken'
 ]
 
-# Optimized for Render's weaker CPU
 limit_concurrency = asyncio.Semaphore(30) 
 
 async def fetch_price_optimized(exchange_id, symbol):
     async with limit_concurrency:
         try:
-            # Reusing exchange instances can save seconds of "handshake" time
             ex_class = getattr(ccxt, exchange_id)
             async with ex_class({'timeout': 7000, 'enableRateLimit': True}) as exchange:
                 ticker = await exchange.fetch_ticker(symbol)
@@ -58,18 +62,17 @@ async def scan_markets(status_message=None):
             pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'PEPE/USDT', 'DOGE/USDT']
 
     if status_message:
-        await status_message.edit_text("⚡ **Turbo Scan: 100 Pairs**\nUsing Colab-optimized parallel processing...")
+        try: await status_message.edit_text("⚡ **Turbo Scan: 100 Pairs**\nUsing Colab-optimized parallel processing...")
+        except: pass
 
-    # We process in smaller "batches" to prevent Render from freezing
     all_results = []
-    batch_size = 200 # Process 200 requests at a time
+    batch_size = 200 
     tasks = [fetch_price_optimized(ex_id, symbol) for symbol in pairs for ex_id in EXCHANGE_IDS]
     
     for i in range(0, len(tasks), batch_size):
         batch = tasks[i:i + batch_size]
         all_results.extend(await asyncio.gather(*batch))
 
-    # Organize and Compare
     market_data = {pair: {} for pair in pairs}
     for ex_id, symbol, data in all_results:
         if data:
@@ -118,6 +121,9 @@ async def perform_and_send_scan(context, status_message=None):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
         except: pass
 
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚀 **Scanner Online**\nUse /scan to begin the Top 100 deep search.")
+
 async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⌛ Starting Optimized Scan...")
     await perform_and_send_scan(context, status_msg)
@@ -127,9 +133,21 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await perform_and_send_scan(context)
 
 if __name__ == '__main__':
-    threading.Thread(target=run_flask, daemon=True).start()
+    # 1. RUN FLASK IN A BACKGROUND THREAD
+    print("Pre-loading Flask...")
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # 2. RUN TELEGRAM IN THE MAIN THREAD
+    print("Initializing Telegram Bot...")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("scan", handle_scan))
     application.add_handler(CallbackQueryHandler(handle_button))
-    application.run_polling(drop_pending_updates=True)
+    
+    print("Bot is Polling. Ready for /scan")
+    # drop_pending_updates=True is vital to avoid 409 Conflict Errors on Render
+    application.run_polling(drop_pending_updates=True, close_loop=False)
     
