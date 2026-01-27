@@ -12,7 +12,6 @@ from flask import Flask
 # --- PATCHES ---
 nest_asyncio.apply()
 
-# --- WEB SERVER FOR RENDER (Keep-Alive) ---
 app_web = Flask(__name__)
 @app_web.route('/')
 def health(): return "Scanner is Active"
@@ -25,27 +24,28 @@ def run_flask():
 TELEGRAM_TOKEN = '7846662156:AAFFfNX_q6LMwFaZsgkylT1Ro1tIh5r3TbM'
 CHAT_IDS = ['6089058395', '-5213714280']
 
+# Your Full 26 Exchange List
 EXCHANGE_IDS = [
-    'binance', 'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
-    'digifinex', 'xt', 'phemex', 'probit', 'coinex', 'bingx', 'whitebit', 'bitrue', 'ascendex',
-    'hitbtc', 'toobit', 'woo', 'woofipro', 'blofin', 'bitfinex', 'kraken', 'bitstamp', 'coinbase',
-    'gemini', 'cryptocom', 'exmo', 'latoken', 'fmfwio', 'oceanex', 'bigone', 'paymium', 'btcturk'
+    'binance', 'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'huobi', 
+    'lbank', 'bitmart', 'poloniex', 'xt', 'phemex', 'coinex', 
+    'bingx', 'whitebit', 'bitrue', 'ascendex', 'toobit', 'blofin', 'latoken',
+    'gemini', 'bitstamp', 'bitfinex', 'coinbase', 'okx', 'kraken'
 ]
 
-# Lowered to 5 to handle the longer waiting times without crashing
-limit_concurrency = asyncio.Semaphore(5)
+limit_concurrency = asyncio.Semaphore(15)
 
 async def fetch_price(exchange_id, symbol):
     async with limit_concurrency:
         if not hasattr(ccxt, exchange_id): return exchange_id, None
         ex_class = getattr(ccxt, exchange_id)
-        # UPDATED: Increased timeout to 30000 (30 seconds) for slow exchanges
-        exchange = ex_class({'timeout': 30000, 'enableRateLimit': True})
+        exchange = ex_class({'timeout': 15000, 'enableRateLimit': True})
         try:
             ticker = await exchange.fetch_ticker(symbol)
             price = ticker.get('last')
             volume = float(ticker.get('quoteVolume', 0) or 0)
-            if price and price > 0:
+            
+            # GHOST FILTER: Kept at $500 to ensure tradeability
+            if price and price > 0 and volume > 500:
                 return exchange_id, {'price': price, 'volume': volume}
         except:
             pass
@@ -57,16 +57,18 @@ async def scan_markets(status_message=None):
     async with ccxt.mexc() as discovery_ex:
         try:
             tickers = await discovery_ex.fetch_tickers()
+            # UPDATED: Now scanning 100 pairs for deeper arbitrage discovery
             pairs = sorted([s for s in tickers if s.endswith('/USDT')], 
-                           key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:40]
+                           key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:100]
         except:
-            pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT']
+            # SAFETY NET: BTC, ETH and core pairs kept as backup
+            pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'PEPE/USDT', 'DOGE/USDT']
 
     all_arbs = []
     for i, symbol in enumerate(pairs):
-        if status_message and i % 2 == 0:
+        if status_message and i % 5 == 0:
             progress = int((i / len(pairs)) * 100)
-            try: await status_message.edit_text(f"⌛ **Scan Progress: {progress}%**\n🔍 Checking: `{symbol}`")
+            try: await status_message.edit_text(f"🚀 **Deep Scan (Top 100): {progress}%**\n🔍 Checking: `{symbol}`")
             except: pass
 
         tasks = [fetch_price(ex, symbol) for ex in EXCHANGE_IDS]
@@ -79,7 +81,8 @@ async def scan_markets(status_message=None):
             high_name, high_data = items[-1]
             spread = ((high_data['price'] - low_data['price']) / low_data['price']) * 100
             
-            if 1.2 < spread < 50.0:
+            # UPDATED: Spread max extended to 80%
+            if 1.2 < spread < 80.0:
                 all_arbs.append({
                     'symbol': symbol,
                     'low_name': low_name, 'low_p': low_data['price'],
@@ -90,20 +93,24 @@ async def scan_markets(status_message=None):
     return sorted(all_arbs, key=lambda x: x['spread'], reverse=True)
 
 async def perform_and_send_scan(context, status_message=None):
+    start_time = datetime.datetime.now()
     arbs = await scan_markets(status_message)
+    duration = (datetime.datetime.now() - start_time).seconds
     now = datetime.datetime.now().strftime('%H:%M:%S')
     
     if not arbs:
-        text = f"🔍 **Scan Complete** ({now})\nNo gaps found > 1.2%."
+        text = f"🔍 **Scan Complete** ({now})\nNo tradeable gaps found (1.2%-80%).\n⏱ Time: {duration}s"
     else:
-        text = f"📊 **Top 10 Arb Results** ({now})\n\n"
-        for a in arbs[:10]:
+        # UPDATED: Extended output to show Top 15 Arb results
+        text = f"📊 **Top 15 Arb Results (Top 100 pairs)** ({now})\n\n"
+        for a in arbs[:15]:
             vol_str = f"${a['volume']:,.0f}"
             text += (f"🪙 *{a['symbol']}*\n"
                      f"🟢 Buy: {a['low_name'].upper()} (${a['low_p']:.6f})\n"
                      f"🔴 Sell: {a['high_name'].upper()} (${a['high_p']:.6f})\n"
                      f"💰 Potential: *{a['spread']:.2f}%*\n"
                      f"📊 24h Vol: {vol_str}\n\n")
+        text += f"⏱ **Duration: {duration}s** | 🏛 **Exchanges: 26**"
 
     if status_message:
         try: await status_message.delete()
@@ -112,16 +119,13 @@ async def perform_and_send_scan(context, status_message=None):
     for cid in CHAT_IDS:
         try:
             await context.bot.send_message(
-                chat_id=cid, 
-                text=text, 
-                parse_mode='Markdown',
+                chat_id=cid, text=text, parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]])
             )
-        except Exception as e:
-            print(f"Error sending to {cid}: {e}")
+        except: pass
 
 async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("⌛ Starting Deep Manual Scan...")
+    status_msg = await update.message.reply_text("⌛ Starting Full Deep Scan (Top 100)...")
     await perform_and_send_scan(context, status_msg)
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,7 +134,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await perform_and_send_scan(context)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Bot Online.\nUse /scan to check markets.")
+    await update.message.reply_text("🚀 Scanner Online.\nDeep Scan (100 pairs) | Results (Top 15) | Max Spread (80%)")
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
@@ -138,6 +142,5 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", handle_scan))
     application.add_handler(CallbackQueryHandler(handle_button))
-    print("Bot is starting (Deep Scan Mode)...")
     application.run_polling(close_loop=False)
-                        
+            
