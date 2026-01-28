@@ -4,155 +4,150 @@ import nest_asyncio
 import ccxt.async_support as ccxt
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import datetime, os, gc
-from aiohttp import web
+import datetime
+import os
+from aiohttp import web  # New: Required for Render health checks
 
+# --- APPLY LOOP PATCH ---
 nest_asyncio.apply()
 
-# ------------------ 1. CONFIGURATION ------------------
-TELEGRAM_TOKEN = '8347545464:AAFFpwW2O5P4lt-cS5x1AW6Llx9Z2jKkgr4'
-CHAT_IDS = ['6089058395', '-5213714280']
+# --- CONFIGURATION ---
+# It's better to keep your token in environment variables, but I've left your original here.
+TELEGRAM_TOKEN = '8132941174:AAExO2F-1DBKMGkXA8kcudBWqzCUGcy6njg'
+CHAT_ID = '6089058395'
 
-# Optimized list for memory safety (Most reliable API exchanges)
 EXCHANGE_IDS = [
-    'binance','bybit','mexc','gate','kucoin','bitget','huobi',
-    'lbank','bitmart','poloniex','xt','phemex','coinex',
-    'bingx','whitebit','bitrue','ascendex','toobit','blofin'
+    'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
+    'digifinex', 'xt', 'phemex', 'probit', 'coinex', 'bingx', 'whitebit', 'bitrue', 'ascendex',
+    'hitbtc', 'toobit', 'woo', 'woofipro', 'blofin', 'bitfinex', 'kraken', 'bitstamp', 'coinbase',
+    'gemini', 'cryptocom', 'exmo', 'latoken', 'fmfwio', 'oceanex', 'bigone', 'paymium', 'btcturk',
+    'independentreserve', 'coincheck', 'zaif', 'bitbank', 'bithumb', 'coinone', 'korbit', 'paribu',
+    'tidex', 'dextrade', 'vitex', 'wavesexchange', 'bequant', 'timex'
 ]
 
-limit_concurrency = asyncio.Semaphore(25)
+# --- CORE LOGIC ---
 
-# ------------------ 2. CORE LOGIC ------------------
-
-async def fetch_price(exchange, exchange_id, symbol):
-    async with limit_concurrency:
+async def get_top_100_pairs():
+    async with ccxt.mexc({'enableRateLimit': True}) as ex:
         try:
-            ticker = await exchange.fetch_ticker(symbol)
-            price = ticker.get('last')
-            vol = float(ticker.get('quoteVolume', 0) or 0)
-            if price and price > 0 and vol > 1000:
-                return exchange_id, symbol, {'price': price, 'volume': vol}
-        except: pass
-    return None
+            tickers = await ex.fetch_tickers()
+            usdt_pairs = [s for s in tickers if s.endswith('/USDT')]
+            sorted_pairs = sorted(usdt_pairs, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)
+            return sorted_pairs[:100]
+        except Exception as e:
+            print(f"⚠️ Discovery Error: {e}")
+            return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT']
+
+limit_concurrency = asyncio.Semaphore(15)
+
+async def fetch_price(exchange_id, symbol):
+    async with limit_concurrency:
+        if not hasattr(ccxt, exchange_id):
+            return exchange_id, None
+        config = {'timeout': 7000, 'enableRateLimit': True}
+        try:
+            async with getattr(ccxt, exchange_id)(config) as exchange:
+                ticker = await exchange.fetch_ticker(symbol)
+                price = ticker.get('last')
+                raw_vol = ticker.get('quoteVolume', 0)
+                volume = float(raw_vol) if raw_vol is not None else 0.0
+                if price is None or price <= 0 or volume < 100:
+                    return exchange_id, None
+                return exchange_id, {'price': price, 'volume': volume}
+        except:
+            return exchange_id, None
 
 async def scan_markets(status_message=None):
-    # Discovery phase
-    discovery_ex = ccxt.mexc({'enableRateLimit': True})
-    try:
-        tickers = await discovery_ex.fetch_tickers()
-        pairs = sorted([s for s in tickers if s.endswith('/USDT')], 
-                       key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:50]
-    except:
-        pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT']
-    finally:
-        await discovery_ex.close()
-
-    # Instance Creation
-    exchanges = {}
-    for ex_id in EXCHANGE_IDS:
-        try:
-            ex_class = getattr(ccxt, ex_id)
-            exchanges[ex_id] = ex_class({'enableRateLimit': True, 'timeout': 6000})
-        except: continue
-
-    # Create Task List
-    tasks = [fetch_price(exchanges[ex_id], ex_id, symbol) for symbol in pairs for ex_id in EXCHANGE_IDS]
-    
-    results = []
-    batch_size = 100 
-    for i in range(0, len(tasks), batch_size):
-        batch = tasks[i : i + batch_size]
-        batch_results = await asyncio.gather(*batch, return_exceptions=True)
-        results.extend([r for r in batch_results if isinstance(r, tuple)])
-        
-        # UI Update every 300 tasks
-        if status_message and i % 300 == 0:
-            prog = int((i / len(tasks)) * 100)
-            try: await status_message.edit_text(f"⏳ **Scanning... {prog}%**")
+    top_pairs = await get_top_100_pairs()
+    all_arbs = []
+    active_pairs = top_pairs[:50]
+    for i, symbol in enumerate(active_pairs):
+        if status_message and i % 2 == 0:
+            progress = int((i / len(active_pairs)) * 100)
+            try:
+                await status_message.edit_text(
+                    f"⌛ **Turbo Scan Progress: {progress}%**\n🔍 Checking: `{symbol}`\n📈 Gaps Found: {len(all_arbs)}"
+                )
             except: pass
-        await asyncio.sleep(0.05)
+        tasks = [fetch_price(ex, symbol) for ex in EXCHANGE_IDS]
+        try:
+            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=20.0)
+        except asyncio.TimeoutError:
+            results = []
+        valid_data = {ex: data for ex, data in results if data is not None and isinstance(data, dict)}
+        if len(valid_data) > 1:
+            sorted_items = sorted(valid_data.items(), key=lambda x: x[1]['price'])
+            low_ex, low_data = sorted_items[0]
+            high_ex, high_data = sorted_items[-1]
+            low_p, high_p = low_data['price'], high_data['price']
+            spread = ((high_p - low_p) / low_p) * 100
+            if 1.2 < spread < 80.0:
+                all_arbs.append({'symbol': symbol, 'low_ex': low_ex, 'low_p': low_p, 'high_ex': high_ex, 'high_p': high_p, 'spread': spread, 'volume': high_data.get('volume', 0)})
+    return sorted(all_arbs, key=lambda x: x['spread'], reverse=True)
 
-    # Cleanup Connections
-    for ex in exchanges.values():
-        await ex.close()
+# --- TELEGRAM HANDLERS ---
 
-    # Process Results
-    market_data = {p: {} for p in pairs}
-    for res in results:
-        ex_id, symbol, data = res
-        market_data[symbol][ex_id] = data
+async def perform_and_send_scan(context, chat_id, status_message=None):
+    try:
+        arbs = await scan_markets(status_message)
+        if not arbs:
+            text = "🔍 Scan complete. No tradable gaps found (1.2% - 80%)."
+        else:
+            text = f"📊 *Live Arbitrage (Filtered)*\n🕒 {datetime.datetime.now().strftime('%H:%M:%S')}\n\n"
+            for arb in arbs[:7]:
+                vol = arb.get('volume', 0)
+                vol_str = f"${vol:,.0f}" if vol > 0 else "Low Vol"
+                text += (f"🪙 *{arb['symbol']}*\n🟢 Buy: {arb['low_ex'].upper()} (${arb['low_p']:.8f})\n🔴 Sell: {arb['high_ex'].upper()} (${arb['high_p']:.8f})\n💰 Potential: *{arb['spread']:.2f}%*\n📊 24h Vol: {vol_str}\n\n")
+    except Exception as e:
+        text = f"❌ **Scan Error:** `{str(e)}`"
+    if status_message:
+        try: await status_message.delete()
+        except: pass
+    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
 
-    arbs = []
-    for symbol, exs in market_data.items():
-        if len(exs) > 1:
-            items = sorted(exs.items(), key=lambda x: x[1]['price'])
-            l_n, l_p = items[0][0], items[0][1]['price']
-            h_n, h_p = items[-1][0], items[-1][1]['price']
-            spread = ((h_p - l_p) / l_p) * 100
-            if 1.2 < spread < 60:
-                arbs.append({'symbol': symbol, 'low_name': l_n, 'low_p': l_p, 
-                             'high_name': h_n, 'high_p': h_p, 'spread': spread, 'vol': items[-1][1]['volume']})
+async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("⌛ Starting Secure Bybit Scan...")
+    await perform_and_send_scan(context, update.effective_chat.id, status_msg)
 
-    # Force RAM cleanup
-    del results, market_data
-    gc.collect() 
-    return sorted(arbs, key=lambda x: x['spread'], reverse=True)
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await perform_and_send_scan(context, query.message.chat_id, query.message)
 
-# ------------------ 3. TELEGRAM HANDLERS ------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚀 Professional Arbitrage Bot Online.\n/scan to start.")
 
-async def perform_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🚀 Starting Secure Multi-Exchange Scan...") if update.message else None
-    
-    start_time = datetime.datetime.now()
-    arbs = await scan_markets(msg)
-    duration = (datetime.datetime.now() - start_time).seconds
-    now = datetime.datetime.now().strftime('%H:%M:%S')
-
-    if not arbs:
-        text = f"🔍 **Scan Complete** ({now})\nNo profitable gaps found.\n⏱ Time: {duration}s"
-    else:
-        text = f"📊 **Arbitrage Results** ({now})\n\n"
-        for a in arbs[:15]:
-            text += (f"🪙 *{a['symbol']}*\n"
-                     f"🟢 BUY: {a['low_name'].upper()} (${a['low_p']:.6f})\n"
-                     f"🔴 SELL: {a['high_name'].upper()} (${a['high_p']:.6f})\n"
-                     f"💰 Gap: *{a['spread']:.2f}%*\n"
-                     f"📈 Vol: ${a['vol']:,.0f}\n\n")
-        text += f"⏱ **Duration: {duration}s**"
-
-    if msg: await msg.delete()
-    
-    for cid in CHAT_IDS:
-        await context.bot.send_message(chat_id=cid, text=text, parse_mode='Markdown',
-                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh Scan", callback_data='ref')]]))
-
-# ------------------ 4. SYSTEM BOOT ------------------
-
-async def handle_health(request):
-    return web.Response(text="Scanner Operational")
+# --- NEW: RENDER HEALTH CHECK SERVER ---
+async def health_check(request):
+    return web.Response(text="I am alive!")
 
 async def main():
-    # Application Init
+    # 1. Start the Telegram Bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("✅ Bot Online. /scan to begin.")))
-    application.add_handler(CommandHandler("scan", perform_scan))
-    application.add_handler(CallbackQueryHandler(lambda u, c: perform_scan(u.callback_query, c), pattern='^ref$'))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("scan", handle_scan))
+    application.add_handler(CallbackQueryHandler(handle_button, pattern='^refresh$'))
 
-    # Web Server (Health Check for Render)
+    # 2. Start a tiny Web Server for Render
     server = web.Application()
-    server.router.add_get('/', handle_health)
-    runner = web.AppRunner(server); await runner.setup()
+    server.router.add_get('/', health_check)
+    runner = web.AppRunner(server)
+    await runner.setup()
     port = int(os.environ.get("PORT", 10000))
-    await web.TCPSite(runner, '0.0.0.0', port).start()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
     
-    # Start Polling
+    # 3. Keep everything running
     async with application:
         await application.initialize()
         await application.start()
         await application.updater.start_polling(drop_pending_updates=True)
-        print(f"Bot Active on Port {port}")
-        while True: await asyncio.sleep(3600)
+        print(f"Bot and Health Check running on port {port}...")
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): pass
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
