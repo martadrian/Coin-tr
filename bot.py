@@ -6,148 +6,153 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import datetime
 import os
-from aiohttp import web  # New: Required for Render health checks
+from aiohttp import web # Better than Flask for Render bots
 
-# --- APPLY LOOP PATCH ---
 nest_asyncio.apply()
 
-# --- CONFIGURATION ---
-# It's better to keep your token in environment variables, but I've left your original here.
+# ------------------ CONFIG ------------------
 TELEGRAM_TOKEN = '8257534645:AAFR5BWqEykB9m1XehqtQ4mtuCFBjKBNaQ0'
-CHAT_ID = '6089058395'
+CHAT_IDS = ['6089058395', '-5213714280']
 
 EXCHANGE_IDS = [
-    'bybit', 'mexc', 'gate', 'kucoin', 'bitget', 'okx', 'huobi', 'lbank', 'bitmart', 'poloniex',
-    'digifinex', 'xt', 'phemex', 'probit', 'coinex', 'bingx', 'whitebit', 'bitrue', 'ascendex',
-    'hitbtc', 'toobit', 'woo', 'woofipro', 'blofin', 'bitfinex', 'kraken', 'bitstamp', 'coinbase',
-    'gemini', 'cryptocom', 'exmo', 'latoken', 'fmfwio', 'oceanex', 'bigone', 'paymium', 'btcturk',
-    'independentreserve', 'coincheck', 'zaif', 'bitbank', 'bithumb', 'coinone', 'korbit', 'paribu',
-    'tidex', 'dextrade', 'vitex', 'wavesexchange', 'bequant', 'timex'
+    'binance','bybit','mexc','gate','kucoin','bitget','huobi',
+    'lbank','bitmart','poloniex','xt','phemex','coinex',
+    'bingx','whitebit','bitrue','ascendex','toobit','blofin','latoken',
+    'gemini','bitstamp','bitfinex','coinbase','okx','kraken'
 ]
 
-# --- CORE LOGIC ---
+limit_concurrency = asyncio.Semaphore(40)
 
-async def get_top_100_pairs():
-    async with ccxt.mexc({'enableRateLimit': True}) as ex:
-        try:
-            tickers = await ex.fetch_tickers()
-            usdt_pairs = [s for s in tickers if s.endswith('/USDT')]
-            sorted_pairs = sorted(usdt_pairs, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)
-            return sorted_pairs[:100]
-        except Exception as e:
-            print(f"⚠️ Discovery Error: {e}")
-            return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT']
-
-limit_concurrency = asyncio.Semaphore(15)
-
-async def fetch_price(exchange_id, symbol):
+# ------------------ PRICE FETCH ------------------
+async def fetch_price(exchange, exchange_id, symbol):
     async with limit_concurrency:
-        if not hasattr(ccxt, exchange_id):
-            return exchange_id, None
-        config = {'timeout': 7000, 'enableRateLimit': True}
         try:
-            async with getattr(ccxt, exchange_id)(config) as exchange:
-                ticker = await exchange.fetch_ticker(symbol)
-                price = ticker.get('last')
-                raw_vol = ticker.get('quoteVolume', 0)
-                volume = float(raw_vol) if raw_vol is not None else 0.0
-                if price is None or price <= 0 or volume < 100:
-                    return exchange_id, None
-                return exchange_id, {'price': price, 'volume': volume}
+            ticker = await exchange.fetch_ticker(symbol)
+            price = ticker.get('last')
+            volume = float(ticker.get('quoteVolume', 0) or 0)
+            if price and price > 0 and volume > 500:
+                return exchange_id, symbol, {'price': price, 'volume': volume}
         except:
-            return exchange_id, None
+            return None
+    return None
 
+# ------------------ SCAN ------------------
 async def scan_markets(status_message=None):
-    top_pairs = await get_top_100_pairs()
-    all_arbs = []
-    active_pairs = top_pairs[:50]
-    for i, symbol in enumerate(active_pairs):
-        if status_message and i % 2 == 0:
-            progress = int((i / len(active_pairs)) * 100)
-            try:
-                await status_message.edit_text(
-                    f"⌛ **Turbo Scan Progress: {progress}%**\n🔍 Checking: `{symbol}`\n📈 Gaps Found: {len(all_arbs)}"
-                )
-            except: pass
-        tasks = [fetch_price(ex, symbol) for ex in EXCHANGE_IDS]
-        try:
-            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=20.0)
-        except asyncio.TimeoutError:
-            results = []
-        valid_data = {ex: data for ex, data in results if data is not None and isinstance(data, dict)}
-        if len(valid_data) > 1:
-            sorted_items = sorted(valid_data.items(), key=lambda x: x[1]['price'])
-            low_ex, low_data = sorted_items[0]
-            high_ex, high_data = sorted_items[-1]
-            low_p, high_p = low_data['price'], high_data['price']
-            spread = ((high_p - low_p) / low_p) * 100
-            if 1.2 < spread < 80.0:
-                all_arbs.append({'symbol': symbol, 'low_ex': low_ex, 'low_p': low_p, 'high_ex': high_ex, 'high_p': high_p, 'spread': spread, 'volume': high_data.get('volume', 0)})
-    return sorted(all_arbs, key=lambda x: x['spread'], reverse=True)
-
-# --- TELEGRAM HANDLERS ---
-
-async def perform_and_send_scan(context, chat_id, status_message=None):
+    discovery_ex = ccxt.mexc()
     try:
-        arbs = await scan_markets(status_message)
-        if not arbs:
-            text = "🔍 Scan complete. No tradable gaps found (1.2% - 80%)."
-        else:
-            text = f"📊 *Live Arbitrage (Filtered)*\n🕒 {datetime.datetime.now().strftime('%H:%M:%S')}\n\n"
-            for arb in arbs[:7]:
-                vol = arb.get('volume', 0)
-                vol_str = f"${vol:,.0f}" if vol > 0 else "Low Vol"
-                text += (f"🪙 *{arb['symbol']}*\n🟢 Buy: {arb['low_ex'].upper()} (${arb['low_p']:.8f})\n🔴 Sell: {arb['high_ex'].upper()} (${arb['high_p']:.8f})\n💰 Potential: *{arb['spread']:.2f}%*\n📊 24h Vol: {vol_str}\n\n")
-    except Exception as e:
-        text = f"❌ **Scan Error:** `{str(e)}`"
+        tickers = await discovery_ex.fetch_tickers()
+        pairs = sorted(
+            [s for s in tickers if s.endswith('/USDT')],
+            key=lambda x: tickers[x].get('quoteVolume', 0),
+            reverse=True
+        )[:100]
+    except:
+        pairs = ['BTC/USDT','ETH/USDT','SOL/USDT','XRP/USDT','DOGE/USDT']
+    finally:
+        await discovery_ex.close()
+
+    if status_message:
+        try: await status_message.edit_text("⚡ **Turbo Scan: 100 Pairs**\nUsing optimized batching...")
+        except: pass
+
+    # ✅ STEP 1: OPEN CONNECTIONS ONCE
+    exchanges = {}
+    for ex_id in EXCHANGE_IDS:
+        try:
+            exchanges[ex_id] = getattr(ccxt, ex_id)({'enableRateLimit': True, 'timeout': 10000})
+        except: continue
+
+    # ✅ STEP 2: PREPARE TASKS
+    tasks = []
+    for symbol in pairs:
+        for ex_id, ex in exchanges.items():
+            tasks.append(fetch_price(ex, ex_id, symbol))
+
+    # ✅ STEP 3: BATCHED GATHER (The Fix for the "Hang")
+    results = []
+    batch_size = 150 # Process 150 at a time instead of 2600
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i : i + batch_size]
+        batch_results = await asyncio.gather(*batch, return_exceptions=True)
+        results.extend([r for r in batch_results if isinstance(r, tuple)])
+        
+        # Give progress updates so you know it's working
+        if status_message and i % 600 == 0:
+            prog = int((i / len(tasks)) * 100)
+            try: await status_message.edit_text(f"⌛ **Scanning Market: {prog}%**")
+            except: pass
+
+    # ✅ STEP 4: CLOSE CONNECTIONS
+    for ex in exchanges.values():
+        await ex.close()
+
+    # Analyze Results
+    market_data = {p: {} for p in pairs}
+    for res in results:
+        ex_id, symbol, data = res
+        market_data[symbol][ex_id] = data
+
+    arbs = []
+    for symbol, exs in market_data.items():
+        if len(exs) > 1:
+            items = sorted(exs.items(), key=lambda x: x[1]['price'])
+            low_n, low_d = items[0]
+            high_n, high_d = items[-1]
+            spread = ((high_d['price'] - low_d['price']) / low_d['price']) * 100
+            if 1.2 < spread < 80:
+                arbs.append({
+                    'symbol': symbol, 'low_name': low_n, 'low_p': low_d['price'],
+                    'high_name': high_n, 'high_p': high_d['price'],
+                    'spread': spread, 'volume': high_d['volume']
+                })
+
+    return sorted(arbs, key=lambda x: x['spread'], reverse=True)
+
+# ------------------ TELEGRAM & SYSTEM ------------------
+async def perform_and_send_scan(context, update=None, status_message=None):
+    start = datetime.datetime.now()
+    arbs = await scan_markets(status_message)
+    duration = (datetime.datetime.now() - start).seconds
+    now = datetime.datetime.now().strftime('%H:%M:%S')
+
+    text = f"📊 **Arb Results** ({now})\n\n"
+    if not arbs:
+        text += "No gaps found (1.2%-80%)."
+    else:
+        for a in arbs[:15]:
+            text += (f"🪙 *{a['symbol']}*\n🟢 {a['low_name'].upper()} (${a['low_p']:.6f})\n"
+                     f"🔴 {a['high_name'].upper()} (${a['high_p']:.6f})\n💰 *{a['spread']:.2f}%*\n\n")
+    text += f"⏱ **Duration: {duration}s**"
+
     if status_message:
         try: await status_message.delete()
         except: pass
-    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
 
-async def handle_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("⌛ Starting Secure Bybit Scan...")
-    await perform_and_send_scan(context, update.effective_chat.id, status_msg)
+    for cid in CHAT_IDS:
+        await context.bot.send_message(chat_id=cid, text=text, parse_mode='Markdown',
+                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Scan", callback_data='refresh')]]))
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await perform_and_send_scan(context, query.message.chat_id, query.message)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Professional Arbitrage Bot Online.\n/scan to start.")
-
-# --- NEW: RENDER HEALTH CHECK SERVER ---
-async def health_check(request):
-    return web.Response(text="I am alive!")
+async def handle_health(request):
+    return web.Response(text="Bot is Active")
 
 async def main():
-    # 1. Start the Telegram Bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", handle_scan))
-    application.add_handler(CallbackQueryHandler(handle_button, pattern='^refresh$'))
+    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("🚀 Bot Online. /scan to start.")))
+    application.add_handler(CommandHandler("scan", lambda u, c: perform_and_send_scan(c, u, u.message.reply_text("⌛ Starting Scan..."))))
+    application.add_handler(CallbackQueryHandler(lambda u, c: perform_and_send_scan(c), pattern='^refresh$'))
 
-    # 2. Start a tiny Web Server for Render
+    # Web Server for Render
     server = web.Application()
-    server.router.add_get('/', health_check)
-    runner = web.AppRunner(server)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
+    server.router.add_get('/', handle_health)
+    runner = web.AppRunner(server); await runner.setup()
+    await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000))).start()
     
-    # 3. Keep everything running
     async with application:
         await application.initialize()
         await application.start()
         await application.updater.start_polling(drop_pending_updates=True)
-        print(f"Bot and Health Check running on port {port}...")
-        while True:
-            await asyncio.sleep(3600)
+        while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    asyncio.run(main())
+        
