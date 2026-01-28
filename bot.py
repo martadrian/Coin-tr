@@ -13,7 +13,7 @@ nest_asyncio.apply()
 
 # --- CONFIGURATION ---
 # It's better to keep your token in environment variables, but I've left your original here.
-TELEGRAM_TOKEN = '8132941174:AAExO2F-1DBKMGkXA8kcudBWqzCUGcy6njg'
+TELEGRAM_TOKEN = '8257534645:AAFR5BWqEykB9m1XehqtQ4mtuCFBjKBNaQ0'
 CHAT_ID = '6089058395'
 
 EXCHANGE_IDS = [
